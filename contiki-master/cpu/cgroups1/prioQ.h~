@@ -1,0 +1,20 @@
+#ifndef __PRIO_Q_H__
+#define __PRIO_Q_H__
+
+#include "xen_timer.h"
+
+typedef void *Queue;
+
+/*Create a queue and return a poitner to the last element*/
+int q_create(void);
+
+/*Add an element in order to the list  and update the final pointer*/
+void q_add(int *q, void *te);
+
+/*Remove the first element to the list and update the  final pointer*/
+void q_remove(int *q , void *te);
+
+/*Print out the contents of the list*/
+void printHeap(int *q);
+
+#endif

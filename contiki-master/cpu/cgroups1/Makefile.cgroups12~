@@ -1,0 +1,129 @@
+# $Id: Makefile.msp430,v 1.21 2007/11/26 23:23:20 adamdunkels Exp $
+
+ifdef nodeid
+CFLAGS += -DNODEID=$(nodeid)
+endif
+
+.SUFFIXES:
+
+### Define the CPU directory
+CONTIKI_CPU=$(CONTIKI)/cpu/cgroups
+
+### Define the source files we have in the CGROUPS port
+
+CONTIKI_CPU_DIRS = . dev
+
+CGROUPS     =  cgroups_timer.c clock.c prioQ.c rtimer-arch.c mtarch.c watchdog.c
+
+SYSAPPS    = #codeprop-tmp.c
+APPDIRS += $(CONTIKI)/apps/codeprop
+
+CONTIKI_TARGET_SOURCEFILES += $(CGROUPS) \
+                              $(SYSAPPS) $(ELFLOADER) \
+                              $(TARGETLIBS) $(UIPDRIVERS)
+
+CONTIKI_SOURCEFILES        += $(CONTIKI_TARGET_SOURCEFILES)
+
+
+### Compiler definitions
+GCC      = 1
+CC       = gcc
+LD       = gcc
+AS       = as
+AR       = ar
+NM       = nm
+OBJCOPY  = objcopy
+STRIP    = strip
+BSL      = bsl
+
+# From version 4.6.x, mspgcc does not support generic MCU identifiers such as
+# msp430x1611 in contrast to msp430f1611
+ifndef CC_MCU
+ ifndef MSPGCC_VERSION
+  MSPGCC_VERSION := ${shell $(CC) -dumpversion}
+ endif
+endif
+ifndef CC_MCU
+ ifneq (,$(findstring 4.4.,$(MSPGCC_VERSION)))
+  CC_MCU := ${subst msp430f,msp430x,$(MCU)}
+ endif
+endif
+ifndef CC_MCU
+ ifneq (,$(findstring 3.2.,$(MSPGCC_VERSION)))
+  CC_MCU := ${subst msp430f,msp430x,$(MCU)}
+ endif
+endif
+ifndef CC_MCU
+ CC_MCU := $(MCU)
+endif
+
+ifndef CFLAGSNO
+CFLAGSNO = -Wall -mmcu=$(CC_MCU) $(CFLAGSWERROR)
+endif
+CFLAGS  += -Os -fno-strict-aliasing
+LDFLAGS += -mmcu=$(CC_MCU) -Wl,-Map=contiki-$(TARGET).map
+
+### These flags can reduce the code size and RAM usage with up to 10%
+ifeq ($(SMALL),1)
+CFLAGS += -ffunction-sections
+# CFLAGS += -fdata-sections
+LDFLAGS += -Wl,--gc-sections,--undefined=_reset_vector__,--undefined=InterruptVectors,--undefined=_copy_data_init__,--undefined=_clear_bss_init__,--undefined=_end_of_init__
+endif # SMALL
+
+
+CFLAGS  += $(CFLAGSNO)
+
+PROJECT_OBJECTFILES += ${addprefix $(OBJECTDIR)/,$(CONTIKI_TARGET_MAIN:.c=.o)}
+
+### Compilation rules
+
+%-stripped.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+	$(STRIP) --strip-unneeded -g -x $@
+
+%.cm: %.co
+	$(LD) -i -r --unresolved-symbols=ignore-in-object-files -mmsp430x149 -o $@ $^
+	$(STRIP) --strip-unneeded -g -x $@
+
+%-stripped.o: %.o
+	$(STRIP) --strip-unneeded -g -x -o $@ $<
+
+%.o: ${CONTIKI_TARGET}/loader/%.S
+	$(AS) -o $(notdir $(<:.S=.o)) $<
+
+%.firmware:	%.${TARGET}
+	mv $< $@
+
+%.ihex: %.$(TARGET)
+	$(OBJCOPY) $^ -O ihex $@
+
+%.mspsim:	%.${TARGET}
+	java -jar ${CONTIKI}/tools/mspsim/mspsim.jar -platform=${TARGET} $<
+
+mspsim-maptable:	contiki-${TARGET}.map
+	java -classpath ${CONTIKI}/tools/mspsim/mspsim.jar se.sics.mspsim.util.MapTable $<
+
+core-labels.o: core.${TARGET}
+	${CONTIKI}/tools/msp430-make-labels core.${TARGET} > core-labels.S
+	$(AS) -o $@ core-labels.S
+#	cp core-labels.o app/
+
+core-globals.o: core.${TARGET}
+	${CONTIKI}/tools/msp430-make-globals core.${TARGET} > core-globals.S
+	$(AS) -o $@ core-globals.S
+
+loader-init.o: ${CONTIKI_TARGET}/loader/loader-init.S
+	$(AS) -o $(notdir $(<:.S=.o)) $<
+# 	cp loader-init.o build-app/
+
+ifdef CORE
+.PHONY: symbols.c symbols.h
+symbols.c symbols.h:
+	$(NM) -C $(CORE) | awk -f $(CONTIKI)/tools/mknmlist > symbols.c
+else
+symbols.c symbols.h:
+	cp ${CONTIKI}/tools/empty-symbols.c symbols.c
+	cp ${CONTIKI}/tools/empty-symbols.h symbols.h
+endif
+
+contiki-$(TARGET).a: ${addprefix $(OBJECTDIR)/,symbols.o}

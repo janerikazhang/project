@@ -1,0 +1,516 @@
+/*
+ * Copyright (c) 2007, Swedish Institute of Computer Science
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the Institute nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE INSTITUTE AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE INSTITUTE OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * This file is part of the Contiki operating system.
+ *
+ * @(#)$Id: simple-cc2420.c,v 1.15 2007/11/17 10:12:19 adamdunkels Exp $
+ */
+#include <pthread.h>
+#include "contiki.h"
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <strings.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h> /* netbd.h is needed for struct hostent =) */
+
+#include "cgroups_radio.h"
+#include "crc32.h"
+
+#include "net/rime/rimestats.h"	/*Could be inculuded for energy esitmation and RELEASE_LOCK*/
+
+#define FOOTER1_CRC_OK      0x80
+#define FOOTER1_CORRELATION 0x7f
+#define MAX_LQI 110
+
+#define DEBUG 0
+#if DEBUG
+#define PRINTF(...) printf(__VA_ARGS__)
+#else
+#define PRINTF(...) do {} while (0)
+#endif
+
+
+/*-------------------------------------*/
+
+
+/*This is the lock for the radio*/
+pthread_mutex_t read_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t send_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t receive_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/*****************************************************************************/
+/****                   Actual Radio Functions now                      ******/
+/****                                                                   ******/
+/****                                                                   ******/
+/****                                                                   ******/
+/*****************************************************************************/
+
+/*form a single 32 bit integer from 4 bytes*/
+//uint32_t createIP(uint8_t firstByte, uint8_t secondByte, uint8_t thirdByte, uint8_t fourthByte);
+/*---------------------------------------------------------------------------*/
+PROCESS(cgroups_radio_process, "cgroups radio driver");
+/*---------------------------------------------------------------------------*/
+
+//static void (* receiver_callback)(const struct radio_driver *);
+
+
+/* functions in the radio driver*/
+int cgroups_radio_on(void);
+
+int cgroups_radio_off(void);
+
+int cgroups_radio_read(void *buf, unsigned short buf_len);
+
+int cgroups_radio_send(const void *payload, unsigned short payload_len);
+
+int cgroups_radio_check_receiving(void);
+
+int cgroups_radio_init(void);
+
+int cgroups_radio_prepare(const void *payload, unsigned short payload_len);
+
+int cgroups_radio_transmit(unsigned short transmit_len);
+
+int cgroups_radio_cca(void); //channel clear assessment to find out if there is a packet in the air or not.
+
+int cgroups_radio_check_pending(void);
+
+signed char cgroups_radio_last_rssi;
+u8_t cgroups_radio_last_correlation;
+
+const struct radio_driver cgroups_radio_driver =
+  {
+    cgroups_radio_init,
+    cgroups_radio_prepare,
+    cgroups_radio_transmit,
+    cgroups_radio_send,
+    cgroups_radio_read,
+    cgroups_radio_cca, //channel clear assessment to find out if there is a packet in the air or not.
+    cgroups_radio_check_receiving,
+    cgroups_radio_check_pending,
+    cgroups_radio_on,
+    cgroups_radio_off,
+  };
+
+static u8_t receive_on, channel_clear = 1;
+/* Radio stuff in network byte order. */
+static u16_t pan_id;
+/*---------------------------------------------------------------------------*/
+/*void
+cgroups_radio_vector_interrupt(unsigned char* data,int len)
+{
+  PRINTF("\n\nProcess RADIO data: %p of size %d\n\n", data, len);*/
+  //ENERGEST_ON(ENERGEST_TYPE_IRQ);
+  
+  /*Copy the data from process into my buffer*/
+
+ 
+  /*if(cgroups_radio_interrupt()) {*/
+    //block_domain(FOREVER);//change to linux version
+  //}
+  //ENERGEST_OFF(ENERGEST_TYPE_IRQ);
+//}
+/*---------------------------------------------------------------------------*/
+void
+cgroups_radio_arch_init(void)
+{
+    PRINTF("Cgroups radio setup\n\n\n\n");
+    //get ip and port from mysql
+    myip_str = dom0ip_str = "localhost";
+    port_str = "1234";
+	
+    // generate ethernet checksum table
+    chksum_crc32gentab();
+
+  cgroups_radio_set_chan_pan_addr(11, 0xffff, 0x0000, NULL);
+  //process_start(&cgroups_radio_process, NULL);
+}
+/*---------------------------------------------------------------------------*/
+static void
+on(void)
+{
+  //ENERGEST_ON(ENERGEST_TYPE_LISTEN);
+  PRINTF("Cgroups Radio is on\n");
+  receive_on = 1;
+}
+/****************/
+static void
+off(void)
+{
+  PRINTF("Cgroups Radio is off\n");
+  receive_on = 0;
+  //ENERGEST_OFF(ENERGEST_TYPE_LISTEN);
+}
+/*---------------------------------------------------------------------------*/
+static u8_t locked, lock_on, lock_off;
+#define GET_LOCK() locked = 1
+static void RELEASE_LOCK(void) {
+  if(lock_on) {
+    on();
+    lock_on = 0;
+  }
+  if(lock_off) {
+    off();
+    lock_off = 0;
+  }
+  locked = 0;
+}
+
+/*---------------------------------------------------------------------------*/
+int
+cgroups_radio_init()
+{
+	cgroups_radio_arch_init();
+    	cgroups_radio_set_chan_pan_addr(11, 0xffff, 0x0000, NULL);
+    	process_start(&cgroups_radio_process, NULL);
+        return 1;
+}
+/*---------------------------------------------------------------------------*/
+/*******************************************************************************/
+int cgroups_radio_cca(){
+     printf("Cgroups radio: check if the channel is clear.\n");
+     return channel_clear;
+}
+/*---------------------------------------------------------------------------*/
+int cgroups_radio_prepare(const void *payload, unsigned short payload_len){
+    printf("Cgroups radio: prepare the message....");
+    send_message.length = payload_len;
+    memcpy(send_message.payload, (char *)payload, payload_len);
+    return 1;
+}
+/*---------------------------------------------------------------------------*/
+int cgroups_radio_transmit(unsigned short transmit_len){
+    pthread_mutex_lock(&send_lock);
+
+    
+    PRINTF("SENDING ");
+
+    //send via udp
+    int fd; /* socket descriptors */
+    struct sockaddr_in server; /* server's address information */
+    struct hostent *he; /* structure that will get information about remote host */
+    socklen_t sin_size;
+
+
+    if ((he=gethostbyname(dom0ip_str))==NULL){ /* calls gethostbyname() */
+        printf("gethostbyname() errorn");
+        exit(1);
+    }
+
+    if ((fd=socket(AF_INET, SOCK_DGRAM, 0))==-1){ /* calls socket() */
+        printf("socket() errorn");
+        exit(1);
+    }
+
+    bzero(&server,sizeof(server));
+    server.sin_family = AF_INET;
+    server.sin_port = htons(port_str); /* htons() is needed again */
+    server.sin_addr = *((struct in_addr *)he->h_addr); /*he->h_addr passes "*he"'s info to "h_addr" */
+
+    sin_size=sizeof(struct sockaddr_in);
+    sendto(fd,send_message.payload,transmit_len,0,(struct sockaddr *)&server,sin_size);
+
+    close(fd); /* close fd */
+
+    pthread_mutex_unlock(&send_lock);
+    PRINTF("sending packet of length %u\n",payload_len);
+    return 1;
+}
+/*---------------------------------------------------------------------------*/
+int
+cgroups_radio_send(const void *payload, unsigned short payload_len)
+{
+   //printk("CGROUPS RADIO: call to send\n");
+   //RIMESTATS_ADD(lltx);
+    
+    cgroups_radio_prepare(payload, payload_len);
+    cgroups_radio_transmit(payload_len);
+    return 1;		
+ }
+/*---------------------------------------------------------------------------*/
+static volatile u8_t receiving = 0;
+static volatile u8_t pending = 0;
+/*---------------------------------------------------------------------------*/
+int
+cgroups_radio_check_receiving()
+{
+  return receiving;
+}
+
+/*---------------------------------------------------------------------------*/
+
+int
+cgroups_radio_check_pending()
+{
+   return pending;
+}
+/*---------------------------------------------------------------------------*/
+int
+cgroups_radio_off(void)
+{
+  if(receive_on == 0) {
+    return 1;
+  }
+
+  if(locked) {
+    lock_off = 1;
+    return 1;
+  }
+
+  if(receiving) {
+    lock_off = 1;
+    return 1;
+  }
+  
+  off();
+  return 1;
+}
+/*---------------------------------------------------------------------------*/
+int
+cgroups_radio_on(void)
+{
+  if(receive_on) {
+    return 1;
+  }
+  if(locked) {
+    lock_on = 1;
+    return 1;
+  }
+
+  on();
+  return 1;
+}
+/*---------------------------------------------------------------------------*/
+void
+cgroups_radio_set_chan_pan_addr(unsigned channel, /* 11 - 26 */
+				unsigned pan,
+				unsigned addr,
+				const u8_t *ieee_addr)
+{
+  /*
+   * Subtract the base channel (11), multiply by 5, which is the
+   * channel spacing. 357 is 2405-2048 and 0x4000 is LOCK_THR = 1.
+   */
+  //u8_t spiStatusByte;
+  u16_t f = channel;
+        
+  f = 5 * (f - 11) + 357 + 0x4000;
+  /*
+   * Writing RAM requires crystal oscillator to be stable.
+   */
+
+  pan_id = pan;
+}
+/*---------------------------------------------------------------------------*/
+/*
+ * Interrupt either leaves frame intact in FIFO or reads *only* the
+ * MAC header and sets rx_fifo_remaining_bytes.
+ *
+ * In order to quickly empty the FIFO ack processing is done at
+ * interrupt priority rather than poll priority.
+ */
+static volatile rtimer_clock_t interrupt_time;
+int
+cgroups_radio_interrupt(void)
+{
+  interrupt_time = rtimer_arch_now();
+  
+  //CLEAR_FIFOP_INT();
+  process_poll(&cgroups_radio_process);
+  PRINTF("CGROUPS RADIO: a packet in the channel\n");
+  channel_clear = 0;
+  return 1;
+}
+/*---------------------------------------------------------------------------*/
+PROCESS_THREAD(cgroups_radio_process, ev, data)
+{
+  PROCESS_BEGIN();
+
+  while(1) {
+    PROCESS_YIELD_UNTIL(ev == PROCESS_EVENT_POLL);
+    pending = 1;
+
+    PRINTF("Cgroups Radio Interrupt: Diff %d\n", rtimer_arch_now() - interrupt_time);
+    
+    /*if(receiver_callback != NULL) {
+      receiver_callback(&cgroups_radio_driver);	*/	/*Use the function from the reciever to call back to it with the radio driver functions*/
+   /* } else {
+      PRINTF("cgroups_radio_process: no set receiving function\n");
+    }*/
+  }
+
+  PROCESS_END();
+}
+/*---------------------------------------------------------------------------*/
+int
+cgroups_radio_read(void *buf, unsigned short bufsize)
+{
+  //printk("xen_radio_read()\n");
+  //u8_t footer[2];
+  receiving = 1;
+  int len;
+  int validCRC = 0;
+
+  pthread_mutex_lock(&read_lock);
+  
+  if(pending == 0)  
+  {
+    channel_clear = 1;
+    pthread_mutex_unlock(&read_lock);
+    return 0;
+  }
+
+  /*Make a copy of the recieved message and release the lock for another packet*/
+  cgroups_message_t tempCopy = received_message;
+ 
+  PRINTF("CGROUPS RADIO: channel freed\n");
+  
+  channel_clear = 1;
+  pending = 0;
+
+  PRINTF(" recieve data: %p of size : %u\n", received_message.payload,received_message.length);
+
+  len = tempCopy.length;
+  
+  if(len > CGROUPS_RADIO_MAX_PACKET_LEN) {
+    /* Empty the packet buffer */
+	PRINTF("THE PACKET SIZE WAS TOO BIG\n");
+    int a = 0;
+    for(a ; a < tempCopy.length ; a++)
+        tempCopy.payload[a] = ' ';
+    //RIMESTATS_ADD(badsynch);
+    pthread_mutex_unlock(&read_lock);
+    return 0;
+  }
+
+  if(len > 0) 
+  {
+    /* Read payload and two bytes of footer */
+    //PRINTF("xen_radio_read: len %d\n", len);
+    if(len < 2)                                         //too short
+    {
+	PRINTF("THE LEN WAS TOO SMALL\n");
+      //RIMESTATS_ADD(tooshort);
+    } 
+    else if(len - 2 > bufsize)                          //too long
+    {
+	PRINTF("BAD : Packet Length %hd, bufsize %hd\n ", tempCopy.length, bufsize );
+        len = 2;
+        //RIMESTATS_ADD(toolong);
+    } 
+    else                                            //right size
+    {
+	/*-----SIMULATE CC2420 CALCULATIONS-------*/
+	/*calc the crc */
+	uint16_t crc = crc16(tempCopy.payload, len-2);
+
+	// CC2420 sets highest order bit as crc valid flag, rest of that byte is LQI (set to max quality) - see p. 37 of datasheet
+	/*If valid set the valid bit*/
+	if(crc == *((uint16_t*)(tempCopy.payload+(len-2))))
+	{
+		/*Set the 		    valid bit      & LQI to max*/
+		tempCopy.payload[len - 1] = FOOTER1_CRC_OK | FOOTER1_CORRELATION;
+//		tempCopy.payload[len - 1] = 0xFF;
+		validCRC = 1;
+
+		// set second last byte to RSSI MAX(not implemented) - see p. 37 of datasheet
+		tempCopy.payload[len - 2] = 0;
+	}
+	
+	/*-----------------------------------------*/
+	//PRINTF("THE right size\n");
+	 PRINTF("GOOD : Packet Length %hd, bufsize %hd\n ", tempCopy.length, bufsize );
+	 PRINTF("RECIEVEING ");
+	int j = 0;
+	for(j ; j < tempCopy.length ; j++)
+		PRINTF("%d", tempCopy.payload[j]);
+	
+	PRINTF("\n");
+	
+        if(tempCopy.payload[len - 1] & FOOTER1_CRC_OK) 
+        {
+	    /*Now pass the packet on up to the higher levels*/
+            memcpy(buf, tempCopy.payload, bufsize);
+	    tempCopy.length = 0;
+
+	    /*Collect info about the medium*/
+            xen_radio_last_rssi = tempCopy.payload[ len - 2];
+            xen_radio_last_correlation = tempCopy.payload[len - 1] & FOOTER1_CORRELATION;
+	    PRINTF("The footer check passed\n");
+           // RIMESTATS_ADD(llrx);
+        } 
+        else 		
+        {
+	    PRINTF("Cgroups Radio:BAD CRC\n");
+           // RIMESTATS_ADD(badcrc);
+            len = 2;
+        }
+    }
+  }
+ 
+  // free up the locks for the next packet
+  PRINTF("CGROUPS RADIO: Free receiving\n");
+  receiving = 0;
+  pthread_mutex_unlock(&read_lock);
+
+  if(len < 2) {
+    return 0;
+  }
+
+  return len - 2; /* Remove two bytes for the footer*/
+}
+/*---------------------------------------------------------------------------*/
+void
+cgroups_radio_set_txpower(u8_t power)
+{
+  PRINTF("CGROUPS RADIO : power setting: %d\ns", power);
+}
+
+/*****************************************************/
+/*						     */
+/*		The Linux Interrupt Function	     */
+/*						     */
+/*****************************************************/
+/*This is the interrupt function that is called by linux process when a packet is ready*/
+void cgroups_packet_interrupt(unsigned char* data,int len)
+{
+	
+	received_message.length = len;
+	memcpy(received_message.payload, data, len);
+
+	// notify higher layers of new message
+	PRINTF(" of size :%d\n", received_message.length);
+        //PRINTF("Got a message of size %d\n", received_message.length);
+        cgroups_radio_interrupt();
+}

@@ -1,0 +1,11 @@
+#ifndef __INTERRUPTS_H__
+#define __INTERRUPTS_H__
+/*This header exists simply as a way to access the interrupt functions interruptA() and interruptB()
+ * ie clock.c and rtimer-arch.c
+*/
+
+void interruptA(int);
+
+void interruptB(int);
+
+#endif

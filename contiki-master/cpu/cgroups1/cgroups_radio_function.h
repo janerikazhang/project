@@ -1,0 +1,80 @@
+/* 
+ * File:   cgroups_radio_function.h
+ * Edited by Rika
+ *
+ * Created on 11 Feb 2013
+ */
+
+#ifndef _CGROUPS_RADIO_FUNCTION_H
+#define	_CGROUPS_RADIO_FUNCTION_H
+
+#include "contiki-conf.h"
+#include "frame.h"
+#include "ip.h"
+#include "udp.h"
+
+/*********************General Helper functions*************************/
+/*form a single 32 bit integer from 4 bytes*/
+uint32_t createIP(uint8_t firstByte, uint8_t secondByte, uint8_t thirdByte, uint8_t fourthByte);
+
+void createMac(uint8_t* dest, uint8_t* src);
+
+void copyData(uint8_t* dest, uint32_t dest_start, uint8_t* src, uint32_t len);
+
+/*Returns true if the mac addresss, mac, matches this nodes one*/
+int frameIsForMe(uint8_t* mac);
+
+/*This is used to fill up empty packet space*/
+void writePadding(uint8_t* buff, uint8_t current_offset, uint8_t len);
+
+/*This is used to write the checksum value into the packet*/
+void writeChecksum(uint8_t* buff, uint32_t current_offset);
+
+/*Simply swaps the bytes around and is used as both htons and ntohs*/
+uint16_t swapBytes(uint16_t bytes);
+
+/***********Packet Header Functions************/
+/*This is used to write the ethernet header */
+void writeEthernetHeader(uint8_t* buff, ethernet_header_t* eth_header, uint32_t current_offset);
+
+/*This is usd to write the ip header*/
+void writeIPHeader(uint8_t* buff, ip_header_t* ip_header, uint32_t current_offset);
+
+/*This is used to write the udp header*/
+void writeUdpHeader(uint8_t* buff, udp_header_t* udp_header, uint32_t current_offset);
+
+/*This is used to write a message into a Xen buffer*/
+void writeMessage(uint8_t* buff, cgroups_message_t* message, uint32_t current_offset);
+
+/******************The Sending functions**************************/
+/*These are called in the order UDP ==> IP ==> ETH==> XENBUS*/
+
+/*Addes the ethernet headers andSends an ethernet frame over the xenbus*/
+void sendViaEth(ethernet_frame_t* eth);
+
+/*Adds the ip headers and then calls sendViaEth*/
+void sendViaIP(ethernet_frame_t* eth);
+
+/*Addes the Udp headers to the ethernet frame and then calls sendViaIp*/
+void sendViaUDP(ethernet_frame_t* eth);
+
+/************************The Recieveing Fucntions******************************************/
+//copy from source to dest, starting at src_start bytes into the source
+void extractData(uint8_t* dest, uint32_t src_start, uint8_t* src, uint32_t len);
+
+// fills in fields of the provided ethernet_header_t from the buffer, starting at the offset
+void readEthernetHeader(uint8_t* buff, ethernet_header_t* eth_header, uint32_t current_offset);
+
+// fills in fields of the provided ip_header from the buffer, starting at the offset
+void readIPHeader(uint8_t* buff, ip_header_t* ip_header, uint32_t current_offset);
+
+// fills in fields of the provided udp_header from the buffer, starting at the offset
+void readUdpHeader(uint8_t* buff, udp_header_t* udp_header, uint32_t current_offset);
+
+// fills in fields of the provided message from the buffer, starting at the offset
+void readMessage(uint8_t* buff, uint32_t current_offset, cgroups_message_t* message, uint8_t length);
+
+
+
+#endif	/* _CGROUPS_RADIO_FUNCTION_H */
+

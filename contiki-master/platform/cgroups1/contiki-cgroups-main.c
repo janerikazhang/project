@@ -1,0 +1,230 @@
+/*
+ * Copyright (c) 2006, Swedish Institute of Computer Science
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the Institute nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE INSTITUTE AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE INSTITUTE OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * @(#)$Id: contiki-sky-main.c,v 1.18 2007/11/28 23:28:35 adamdunkels Exp $
+ */
+
+//#include <signal.h>
+//#include <stdio.h>
+//#include <string.h>
+
+//#include <io.h>
+#include <lib.h>
+
+#include "contiki.h"
+
+//#include "dev/button-sensor.h"
+//#include "dev/ds2411.h"
+//#include "dev/sht11.h"
+#include "dev/leds.h"
+
+//#include "dev/light.h"
+//#include "dev/xmem.h"
+//#include "dev/simple-cc2420.h"
+//#include "dev/watchdog.h"
+//#include "dev/slip.h"
+//#include "dev/uart1.h"
+
+#include "net/mac/xmac.h"
+#include "net/mac/nullmac.h"
+
+#include "node-id.h"
+#include "time.h"		/*For the FOREVER value in the blocking call*/
+
+#include "net/rime.h"
+
+#include "sys/autostart.h"
+
+#include "xen_timer.h"      /*The Xen Timer */
+#include "xen_radio.h"      /*The Xen Radio*/
+
+#define WITH_UIP 0
+
+#if WITH_UIP
+static struct uip_fw_netif slipif =
+{UIP_FW_NETIF(192,168,1,2, 255,255,255,255, slip_send)};
+#endif /* WITH_UIP */
+
+#ifdef EXPERIMENT_SETUP
+#include "experiment-setup.h"
+#endif
+/*---------------------------------------------------------------------------*/
+#if 0
+int
+force_float_inclusion()
+{
+  extern int __fixsfsi;
+  extern int __floatsisf;
+  extern int __mulsf3;
+  extern int __subsf3;
+
+  return __fixsfsi + __floatsisf + __mulsf3 + __subsf3;
+}
+#endif
+/*---------------------------------------------------------------------------*/
+//void uip_log(char *msg) { puts(msg); }
+/*---------------------------------------------------------------------------*/
+/* Radio stuff in network byte order. */
+static u16_t panId = 0x2024;
+
+#ifndef RF_CHANNEL                  /*Not Yet Applicable to Xen*/
+#define RF_CHANNEL              26
+#endif
+/*---------------------------------------------------------------------------*/
+void
+force_inclusion(int d1, int d2)
+{
+  snprintf(NULL, 0, "%d", d1 % d2);
+}
+/*---------------------------------------------------------------------------*/
+static void
+set_rime_addr(void)
+{
+  rimeaddr_t addr;
+  addr.u8[0] = node_id;
+  rimeaddr_set_node_addr(&addr);
+}
+/*---------------------------------------------------------------------------*/
+static void
+print_processes(struct process **processes)
+{
+  printk("Starting\n");
+  while(*processes != NULL) {
+    printk(" '%s'", (*processes)->name);
+    processes++;
+  }
+  printk(" \n");
+}
+/*--------------------------------------------------------------------------*/
+
+void app_main(void* si)//, void *n_dev)
+{
+    
+    unsigned int  foo = -1;
+    while(foo-- > 0);
+printk("Cgroups -timer\n");
+  /*Initalize "hardware".*/
+  init_cgroups_timer();
+printk("clock_init\n");
+  clock_init();
+
+printk("LEDS\n");
+  leds_init();
+  leds_on(LEDS_RED);
+  printk("Hello glorious world of cheese\n");
+
+  leds_on(LEDS_GREEN);
+  //ds2411_init();          //unique mote id, hardware: Not used in xen as XEN's id will suffice
+  //sensors_light_init();
+  //sht11_init();       //humidity sensor
+  leds_on(LEDS_BLUE);
+ // xmem_init();            /*not yet implemented in Xen*/
+
+  leds_off(LEDS_RED);
+  rtimer_init();
+
+
+  /*
+   * Hardware initialization done!
+   */
+  
+  /* Sets the node id that was assigned from dom0 in xenstore */
+  node_id_restore();
+
+  leds_off(LEDS_BLUE);
+  printk(CONTIKI_VERSION_STRING " started. ");
+  
+  if(node_id > 0) {
+    printk("Node id is set to %u.\n", node_id);
+  } else 
+  {
+    printk("Node id is not set.\n");
+    /*Can't recover from this at the moment*/
+//while(1)printk("No Node ID\n");
+    do_exit();
+  }
+  //printk("MAC %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
+//	 ds2411_id[0], ds2411_id[1], ds2411_id[2], ds2411_id[3],
+//	 ds2411_id[4], ds2411_id[5], ds2411_id[6], ds2411_id[7]);
+
+  /*
+   * Initialize Contiki and our processes.
+   */
+  process_init();
+  process_start(&etimer_process, NULL);
+
+  ctimer_init();
+
+  leds_off(LEDS_GREEN);
+  
+  set_rime_addr();
+
+  /*Set up the Cgroups Radio and register it's functions with rime*/
+  cgroups_radio_init();///need to be fixed
+
+  /**This should be /xmac/ but havn't had the time to calculate the strobe times for
+   the simulation so using nullmax instead*/
+ // rime_init(xmac_init(&cgroups_radio_driver));
+  rime_init(nullmac_init(&cgroups_radio_driver));
+
+  printk("Autostarting processes\n");
+  print_processes((struct process **) autostart_processes);
+  autostart_start((struct process **) autostart_processes);
+
+  /*
+   * This is the scheduler loop.
+   */
+  //int count = 0;
+  while (1) {
+    int r;
+    do {
+	      r = process_run();
+    } while(r > 0);
+	
+	//printk("NOW SLEEP %d r:%d\n", count++, r);
+	//There is no more work for the scheduler just now, sleep till interrupt
+        //local_irq_enable();
+        
+	block_domain(FOREVER);
+	//printk("BLOCK \n");//: %lld", monotonic_clock());
+	//HYPERVISOR_sched_op(SCHEDOP_yield, 0);
+	//printk("WAKE  \n");//: %lld", monotonic_clock());
+	//while(!is_asleep());
+	//printk("RUN  \n");//: %lld", monotonic_clock());
+
+  }
+
+ // return 0;
+}
+/*--------------------------------------------------------------------------*/
+int main(int argc, char **argv)
+{
+    /*This should do nothing and never get used*/
+    return 0;
+}
+/*---------------------------------------------------------------------------*/
